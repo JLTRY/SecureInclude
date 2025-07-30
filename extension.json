@@ -1,30 +1,35 @@
 {
-	"name": "SecureInclude",
-	"version": "2.0 WIP",
-	"author": [
+	"name" : "SecureInclude",
+	"version" : "2.1",
+	"author" : [
 		"Noah Spurrier",
 		"Matthieu Moy",
 		"Edgar Soldin (since v2.0)"
 	],
-	"url": "https://www.mediawiki.org/wiki/Extension:SecureInclude",
-	"descriptionmsg": "secureinclude-desc",
-	"license-name": "GPL-3.0-or-later",
-	"type": "parserhook",
-	"requires": {
-		"MediaWiki": ">= 1.25"
+	"url" : "https://www.mediawiki.org/wiki/Extension:SecureInclude",
+	"descriptionmsg" : "secureinclude-desc",
+	"license-name" : "GPL-3.0-or-later",
+	"type" : "parserhook",
+	"requires" : {
+		"MediaWiki" : ">= 1.25"
 	},
-	"MessagesDirs": {
-		"SecureInclude": [
+	"MessagesDirs" : {
+		"SecureInclude" : [
 			"i18n"
 		]
 	},
-	"AutoloadClasses": {
-		"SecureInclude": "SecureInclude.php"
+	"AutoloadClasses" : {
+		"SecureInclude" : "SecureInclude.php"
 	},
-	"Hooks": {
-		"ParserFirstCallInit": [
+	"Hooks" : {
+		"ParserFirstCallInit" : [
 			"SecureInclude::onParserFirstCallInit"
 		]
 	},
-	"manifest_version": 1
+	"GroupPermissions" : {
+		"secureinclude" : {
+			"secureinclude-scripting" : true
+		}
+	},
+	"manifest_version" : 1
 }
