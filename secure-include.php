@@ -253,6 +253,9 @@ if (! defined('MEDIAWIKI')) {
   die('This file is a MediaWiki extension, it is not a valid entry point');
 }
 
+# needed since v1.39
+use MediaWiki\SyntaxHighlight\SyntaxHighlight;
+
 /* Prevent register_global attacks */
 $wg_include_allowed_features = Null;
 $wg_include_allowed_parent_paths = Null;
@@ -659,6 +662,15 @@ function ef_include_check_local_file($src_path)
   // general permission
   if (! $wg_include_allowed_features['local'])
     return "Not allowed to include local files.";
+
+  // openable?
+  if ((! is_readable($src_path)) || is_dir($src_path)) {
+    // purposely the same message for unreadable files and
+    // directories, to avoid leaking information.
+    return "Cannot open file '" . htmlspecialchars($src_path) . "'.";
+  }
+
+  $src_path = realpath($src_path);
   // in path list?
   if (! ef_include_path_in_allowed_list($wg_include_allowed_parent_paths, $src_path)) {
     return "'" . htmlspecialchars($src_path) . "' is not a child of any path in \$wg_include_allowed_parent_paths. '" . htmlspecialchars(implode('; ', array_map(function ($val) {
@@ -670,12 +682,7 @@ function ef_include_check_local_file($src_path)
   if (ef_include_path_in_regex_list($wg_include_disallowed_regex, $src_path)) {
     return htmlspecialchars($src_path) . " matches a pattern in \$wg_include_disallowed_regex.";
   }
-  // openable?
-  if ((! is_readable($src_path)) || is_dir($src_path)) {
-    // purposely the same message for unreadable files and
-    // directories, to avoid leaking information.
-    return "Cannot open file " . htmlspecialchars($src_path) . ".";
-  }
+
   // Local file is allowed.
   return True;
 }
@@ -694,9 +701,9 @@ function ef_include_check_local_file($src_path)
  *          associative array
  * @param mixed $parser
  *          Parser
- * @param mixed $parser
+ * @param mixed $frame
  *          PPFrame
- *          
+ *
  * @access public
  * @return string
  */
@@ -779,13 +786,12 @@ function ef_include_render($input, $argv, $parser, $frame)
     $output = join("\n", $output);
   } else // load file from URL (may be a local or remote URL)...
   {
-    $src_path = realpath($argv['src']);
-    if (! $src_path) {
+    if ( filter_var($argv['src'], FILTER_VALIDATE_URL) ) {
       $msg = ef_include_check_remote_url($argv['src']);
       if (! ($msg === True))
         return ef_include_get_errors($msg);
     } else {
-      $msg = ef_include_check_local_file($src_path);
+      $msg = ef_include_check_local_file($argv['src']);
       if (! ($msg === True))
         return ef_include_get_errors($msg);
     }
@@ -807,14 +813,30 @@ function ef_include_render($input, $argv, $parser, $frame)
       return ef_include_get_errors("'highlight' feature not activated for include.");
 
     $error = '';
-    if (! class_exists('SyntaxHighlight')) {
+    if (! class_exists('SyntaxHighlight') && ! class_exists('\MediaWiki\SyntaxHighlight\SyntaxHighlight')) {
       $error = ef_include_add_error('Missing SyntaxHighlight_GeSHi extension.');
     } else {
       $status = SyntaxHighlight::highlight($output, $argv['lang'], $argv);
+      
+      # generate warnings if we hit the size limits
+      $config = MediaWiki\MediaWikiServices::getInstance()->getMainConfig();
+      $maxLines = $config->get( 'SyntaxHighlightMaxLines' );
+      $maxBytes = $config->get( 'SyntaxHighlightMaxBytes' );
+      // check size
+      $outBytes = strlen( $output );
+      if ( $outBytes > $maxBytes )
+        ef_include_add_error( "Output size '$outBytes' exceeds Syntaxhighlight size limit '\$wgSyntaxHighlightMaxBytes=$maxBytes'" );
+      # check line limit
+      $outLines = substr_count( $output, "\n" ) + 1;
+      if ( $outLines > $maxLines )
+       ef_include_add_error( "Output line count '$outLines' exceeds size limit '\$wgSyntaxHighlightMaxLines=$maxLines'" );
+
       if ($status->isOK()) {
         $output = $status->getValue();
+        if (count($status->getMessages()) > 0)
+         ef_include_add_error( Status::wrap( $status )->getHTML() );
         //enqueue css so styles are rendered
-        $parser->getOutput()->addModuleStyles( 'ext.pygments' );
+        $parser->getOutput()->addModuleStyles( [ 'ext.pygments' ] );
       } else {
         ef_include_add_error( var_export($status, true) );
         $output = htmlspecialchars($output);
@@ -864,7 +886,7 @@ function ef_include_shell($input, $argv, $parser, $frame)
   $error = '';
   if (isset($res[1])) {
     $error = ef_include_get_errors($res[1]);
-    $parsedText = $parser->parse($error, $parser->mTitle, $parser->mOptions, false, false);
+    $parsedText = $parser->parse($error, $parser->getTitle(), $parser->getOptions(), false, false);
     $error = $parsedText->getText();
   }
   return $error . implode("\n", $output);
@@ -896,6 +918,8 @@ function ef_include_php($input, $argv, $parser, $frame)
   return $output;
 }
 
+use MediaWiki\MediaWikiServices;
+
 function ef_include_isEvalAllowed( $mode, $checksum = null ) {
   // are enabled globally?
   global $wg_include_allowed_features;
@@ -909,22 +933,27 @@ function ef_include_isEvalAllowed( $mode, $checksum = null ) {
   $group = 'secureinclude';
   $right = 'secureinclude-scripting';
   // enabled via user?
-  global $wgUser, $wg_include_allowed_users, $wgOut;
-  $logged_in = $wgUser && $wgUser->isLoggedIn();
+  $wgContext = RequestContext::getMain();
+  $wgUser = $wgContext->getUser();
+
+  $logged_in = $wgUser && $wgUser->getId() != 0;
   $edit_ok = $logged_in && $wgUser->isAllowed( 'edit' );
-  $script_ok = $edit_ok && in_array($right,$wgUser->getRights());
+
+  $rights = MediaWikiServices::getInstance()->getPermissionManager()->getUserPermissions( $wgUser );
+  $script_ok = $edit_ok && in_array($right,$rights);
+
   // test if latest revision is from same user
   $revUserId='';
-  if ( $wgOut && $wgOut->getContext() && $wgOut->getContext()->canUseWikiPage() &&
-    $wgOut->getContext()->getWikiPage() && 
-    $wgOut->getContext()->getWikiPage()->getRevisionRecord() &&
-    $wgOut->getContext()->getWikiPage()->getRevisionRecord()->getUser() )
-    $revUserId = $wgOut->getContext()->getWikiPage()->getRevisionRecord()->getUser()->getId();
+  if ( $wgContext && $wgContext->canUseWikiPage() &&
+    $wgContext->getWikiPage() && 
+    $wgContext->getWikiPage()->getRevisionRecord() &&
+    $wgContext->getWikiPage()->getRevisionRecord()->getUser() )
+    $revUserId = $wgContext->getWikiPage()->getRevisionRecord()->getUser()->getId();
   $lastEdit_ok = $wgUser->getId() === $revUserId;
 
   if (! $checksum_ok) {
     $prohibited = "Executing this '{$mode}' code is currently prohibited";
-    $user = "the currently logged in user '{$wgUser->mName}'";
+    $user = "the currently logged in user '{$wgUser->getName()}'";
     if ( !$logged_in )
       return [
         false,
@@ -933,18 +962,18 @@ function ef_include_isEvalAllowed( $mode, $checksum = null ) {
     elseif (! $script_ok)
       return [
         false,
-        "$prohibited because $user is no member of group '$group' and \$wg_include_allowed_checksums[$mode] does not contain a matching checksum!"
+        "$prohibited because '$user' is no member of group '$group' and \$wg_include_allowed_checksums[$mode] does not contain a matching checksum!"
       ];
     elseif (! $lastEdit_ok)
       return [
         false,
-        "$prohibited because someone else than $user has edited the page inbetween and \$wg_include_allowed_checksums[$mode] does not contain a matching checksum! <br>
+        "$prohibited because someone else than '$user' has edited the page inbetween and \$wg_include_allowed_checksums[$mode] does not contain a matching checksum! <br>
 Doublecheck the changes and make sure they don't pose a security risk. Afterwards do some minor edit and save the page so you are the latest editor!"
       ];
     else
       return [
         true,
-        "Executing this '{$mode}' code with checksum '{$checksum}' is '''only temporarily allowed''' during editing. To make it permanent add the checksum to '''\$wg_include_allowed_checksums['$mode']''' !"
+        "Executing this '{$mode}' code with checksum '{$checksum}' is <b>only temporarily allowed</b> during editing. To make it permanent add the checksum to '''\$wg_include_allowed_checksums['$mode']''' !"
         ];
   } else {
      return [ true ];
@@ -962,8 +991,12 @@ function ef_include_add_error(string $message)
   if (! empty($backtrace[0]) && is_array($backtrace[0]) && is_array($backtrace[1])) {
     $fileinfo = basename($backtrace[0]['file']) . "::" . $backtrace[1]['function'] . ' (line ' . $backtrace[0]['line'] . ')';
   }
-  $error_msg_prefix = "<b>ERROR</b> in " . htmlspecialchars($fileinfo);
-  $error = '<p class="errorbox">' . $error_msg_prefix . ' - ' . htmlspecialchars($message) . '</p>';
+
+  $error = '<div class="cdx-message cdx-message--block cdx-message--error">'.
+           '<span class="cdx-message__icon"></span>'.
+           '<div class="cdx-message__content">'.
+           '<p><b>ERROR</b> in '.htmlspecialchars($fileinfo).'</p><p>' . $message . '</p>'.
+           '</div></div>';
   $ef_include_errors[] = $error;
 }
 
