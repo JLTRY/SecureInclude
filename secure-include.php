@@ -816,10 +816,15 @@ function ef_include_render($input, $argv, $parser, $frame)
     if (! class_exists('SyntaxHighlight') && ! class_exists('\MediaWiki\SyntaxHighlight\SyntaxHighlight')) {
       $error = ef_include_add_error('Missing SyntaxHighlight_GeSHi extension.');
     } else {
-      $status = SyntaxHighlight::highlight($output, $argv['lang'], $argv);
-      
-      # generate warnings if we hit the size limits
       $config = MediaWiki\MediaWikiServices::getInstance()->getMainConfig();
+      $cache =  MediaWiki\MediaWikiServices::getInstance()->getMainWANObjectCache();
+      if ( method_exists('\MediaWiki\SyntaxHighlight\SyntaxHighlight', 'syntaxHighlight') ) {
+          $syntaxhighlight = new SyntaxHighlight( $config, $cache );
+          $status = $syntaxhighlight->syntaxHighlight($output, $argv['lang'], $argv);
+      } else {
+          $status = SyntaxHighlight::highlight($output, $argv['lang'], $argv);
+      }
+      # generate warnings if we hit the size limits
       $maxLines = $config->get( 'SyntaxHighlightMaxLines' );
       $maxBytes = $config->get( 'SyntaxHighlightMaxBytes' );
       // check size
